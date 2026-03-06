@@ -31,11 +31,45 @@ jobs:
       - name: Build with Gradle
         run: ./gradlew build
 
+      - name: get download
+        id: download
+        run: |
+          JAR_FILE="$(ls -1 build/libs/*.jar | head -n 1)"
+          if [ -z "$JAR_FILE" ]; then
+            echo "No JAR artifact found in build/libs"
+            exit 1
+          fi
+          echo "jar_file=$JAR_FILE" >> "$GITHUB_OUTPUT"
+
       - name: Build release metadata
         id: meta
         run: |
           echo "tag=v${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
           echo "name=Release #${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+      - name: make changelog
+        id: changelog
+        run: |
+          BEFORE_SHA="${{ github.event.before }}"
+
+          if [ "${{ github.event_name }}" = "push" ] && [ "$BEFORE_SHA" != "0000000000000000000000000000000000000000" ] && git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            RANGE="${BEFORE_SHA}..${GITHUB_SHA}"
+          elif git rev-parse "${GITHUB_SHA}~1" >/dev/null 2>&1; then
+            RANGE="${GITHUB_SHA}~1..${GITHUB_SHA}"
+          else
+            RANGE="${GITHUB_SHA}"
+          fi
+
+          CHANGELOG="$(git log --pretty=format:"- [\`%h\`] %s (https://github.com/${GITHUB_REPOSITORY}/commit/%H)" "${RANGE}")"
+          if [ -z "$CHANGELOG" ]; then
+            CHANGELOG="- [\`${GITHUB_SHA::7}\`] ${GITHUB_EVENT_NAME} (https://github.com/${GITHUB_REPOSITORY}/commit/${GITHUB_SHA})"
+          fi
+
+          {
+            echo "changelog<<EOF"
+            echo "$CHANGELOG"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Publish Release
         uses: softprops/action-gh-release@v2
@@ -44,18 +78,25 @@ jobs:
           tag_name: ${{ steps.meta.outputs.tag }}
           target_commitish: ${{ github.sha }}
           name: ${{ steps.meta.outputs.name }}
-          generate_release_notes: true
+          body: |
+            Download: https://2b2t.lol/download
+
+            ## Changelog
+            ${{ steps.changelog.outputs.changelog }}
           prerelease: false
           make_latest: true
           files: |
             build/libs/*.jar
 
       - name: Discord notification
-        uses: Ilshidur/action-discord@0.4.0
-        env:
-          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
-          DISCORD_USERNAME: 2b2t.lol Releases
+        uses: appleboy/discord-action@v1.2.0
         with:
-          args: |
+          webhook_url: ${{ secrets.DISCORD_WEBHOOK }}
+          username: 2b2t.lol Releases
+          file: ${{ steps.download.outputs.jar_file }}
+          message: |
             A new mod version has been released.
             Download: https://2b2t.lol/download
+
+            Changelog:
+            ${{ steps.changelog.outputs.changelog }}
